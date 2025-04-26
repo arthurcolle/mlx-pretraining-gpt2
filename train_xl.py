@@ -12,9 +12,6 @@ import matplotlib.pyplot as plt
 from mlx.utils import tree_flatten, tree_map
 from transformer import GPT, GPTConfig
 from dataclasses import dataclass
-from metrics import MetricsTracker, PerplexityCalculator
-from sample_generator import TextSampleGenerator
-from helper_function import simplify_compatible
 
 
 @dataclass
@@ -29,9 +26,6 @@ class TrainConfig:
     save_every: int
     early_stopping_patience: int
     validation_interval: int
-    sample_every: int
-    num_samples: int
-    max_sample_tokens: int
 
 
 class DataLoader:
@@ -74,9 +68,6 @@ class GPTTrainer:
         train_config: TrainConfig,
         model_config: GPTConfig,
         checkpoint_dir=None,
-        use_wandb=False,
-        use_tensorboard=True,
-        sample_prompts=None,
     ):
         self.data_loader = DataLoader(data_path, model_config.block_size)
         self.val_loader = DataLoader(val_path, model_config.block_size) if val_path else None
@@ -92,10 +83,6 @@ class GPTTrainer:
         self.lr_decay_iters = train_config.lr_decay_iters
         self.early_stopping_patience = train_config.early_stopping_patience
         self.validation_interval = train_config.validation_interval
-        self.sample_every = train_config.sample_every
-        self.num_samples = train_config.num_samples
-        self.max_sample_tokens = train_config.max_sample_tokens
-        self.sample_prompts = sample_prompts or ["Once upon a time", "The meaning of life is", "In the future"]
 
         # initialize the model and optimizer
         self.model_config = model_config
@@ -121,26 +108,10 @@ class GPTTrainer:
         self.val_path = val_path
         self.data_loader = DataLoader(data_path, self.model_config.block_size)
 
-        # Initialize directories
-        self.samples_dir = os.path.join(checkpoint_dir, "samples")
-        os.makedirs(self.samples_dir, exist_ok=True)
-        
-        # Setup metrics tracker
-        self.metrics = MetricsTracker(
-            log_dir=checkpoint_dir,
-            use_tensorboard=use_tensorboard,
-            use_wandb=use_wandb,
-            wandb_project="gpt2-mlx",
-            wandb_name=f"gpt2-{model_config.n_layer}l-{model_config.n_head}h-{model_config.n_embd}d",
-            config={
-                "model": model_config.__dict__,
-                "train": train_config.__dict__,
-                "dataset": {
-                    "train_path": data_path,
-                    "val_path": val_path,
-                }
-            }
-        )
+        # Initialize plots directory
+        self.plots_dir = os.path.join(checkpoint_dir, "plots")
+        if not os.path.exists(self.plots_dir):
+            os.makedirs(self.plots_dir)
 
     def save_checkpoint(self, checkpoint_dir, is_best=False):
         if not os.path.exists(checkpoint_dir):
@@ -176,7 +147,6 @@ class GPTTrainer:
         toc = time.perf_counter()
         print(
             f"iter {iteration_count}: train loss {average_loss:.3f}, "
-            f"ppl {PerplexityCalculator.calculate_perplexity(average_loss):.2f}, "
             f"it/sec {1.0 / (toc - tic):.3f}, "
             f"lr {self.optimizer.learning_rate:.4f}"
         )
@@ -218,7 +188,7 @@ class GPTTrainer:
     def compute_batch_loss(self, loss):
         average_loss = self.accumulated_loss / self.grad_accumulation_steps
         self.accumulated_loss = 0.0
-        simplify_compatible(loss, self.model.parameters())
+        mx.simplify(loss, self.model.parameters())
         mx.eval(loss, self.model.parameters())
         return average_loss
 
@@ -230,7 +200,7 @@ class GPTTrainer:
             lambda x: mx.zeros_like(x), self.model.parameters()
         )
 
-    def evaluate(self, num_batches=10):
+    def evaluate(self, num_batches=5):
         """Evaluate the model on validation data"""
         if self.val_loader is None:
             return None
@@ -249,62 +219,30 @@ class GPTTrainer:
             
         return val_loss / num_batches
 
-    def generate_samples(self):
-        """Generate text samples to track qualitative model progress"""
-        try:
-            import tiktoken
-            # Load tokenizer
-            tokenizer = tiktoken.get_encoding("gpt2")
-            
-            # Prepare prompts (limit to num_samples)
-            prompts = self.sample_prompts[:self.num_samples]
-            
-            # Create sample generator
-            generator = TextSampleGenerator(
-                model=self.model,
-                prompts=prompts,
-                max_new_tokens=self.max_sample_tokens,
-                temperature=0.7,
-                top_k=40,
-                top_p=0.9
-            )
-            
-            # Generate samples
-            print(f"Generating {len(prompts)} text samples...")
-            samples = generator.generate_samples()
-            
-            if not samples:
-                print("WARNING: No samples were generated")
-                return
-                
-            # Save samples
-            output_path = os.path.join(self.samples_dir, f"samples_iter_{self.iter_num}.json")
-            generator.save_samples(samples, output_path)
-            
-            # Log samples to trackers
-            prompts_text = []
-            generations_text = []
-            for prompt, generated, _ in samples:
-                prompts_text.append(prompt)
-                generations_text.append(generated)
-            
-            self.metrics.add_generated_samples(prompts_text, generations_text, self.iter_num)
-            
-            # Log a sample to console for quick inspection
-            if samples:
-                prompt, generated, full = samples[0]
-                print(f"Sample generation (first 100 chars): {full[:100]}...")
-            
-            print(f"Generated {len(samples)} text samples. Saved to {output_path}")
-            
-        except ImportError as e:
-            print(f"Sample generation skipped: {str(e)}")
-        except Exception as e:
-            import traceback
-            print(f"Error generating samples: {str(e)}")
-            print(f"Traceback: {traceback.format_exc()}")
-            # Continue training despite generation error
-            print("Continuing training despite sample generation error...")
+    def plot_losses(self):
+        """Plot training and validation losses"""
+        plt.figure(figsize=(10, 6))
+        plt.plot(self.train_losses, label='Training Loss')
+        
+        if self.val_losses:
+            # Create x-axis values for validation points (every validation_interval)
+            val_x = list(range(0, len(self.train_losses), self.validation_interval))
+            # Make sure we have the right number of points
+            val_y = self.val_losses[:len(val_x)]
+            plt.plot(val_x, val_y, 'r', label='Validation Loss')
+        
+        plt.xlabel('Iterations')
+        plt.ylabel('Loss')
+        plt.title('Training and Validation Loss (GPT-2 XL)')
+        plt.legend()
+        plt.grid(True)
+        
+        # Save plot
+        plot_path = os.path.join(self.plots_dir, f"loss_plot_iter_{self.iter_num}.png")
+        plt.savefig(plot_path)
+        plt.close()
+        
+        print(f"Loss plot saved to {plot_path}")
 
     def train(self):
         self.print_parameter_count()
@@ -321,39 +259,13 @@ class GPTTrainer:
                 self.update_learning_rate(self.iter_num)
                 batch_loss = self.compute_batch_loss(loss)
                 self.train_losses.append(batch_loss)
-                
-                # Log metrics
-                perplexity = PerplexityCalculator.calculate_perplexity(batch_loss)
-                lr = self.optimizer.learning_rate
-                self.metrics.add_scalars(
-                    {
-                        "loss": batch_loss,
-                        "perplexity": perplexity,
-                        "learning_rate": lr
-                    },
-                    step=self.iter_num,
-                    group="train"
-                )
-                
                 tic = self.print_loss(self.iter_num, batch_loss, tic)
 
                 # Validation
                 if self.val_loader and self.iter_num % self.validation_interval == 0:
                     val_loss = self.evaluate()
                     self.val_losses.append(val_loss)
-                    val_ppl = PerplexityCalculator.calculate_perplexity(val_loss)
-                    
-                    # Log validation metrics
-                    self.metrics.add_scalars(
-                        {
-                            "loss": val_loss,
-                            "perplexity": val_ppl
-                        },
-                        step=self.iter_num,
-                        group="val"
-                    )
-                    
-                    print(f"iter {self.iter_num}: val loss {val_loss:.3f}, val ppl {val_ppl:.2f}")
+                    print(f"iter {self.iter_num}: val loss {val_loss:.3f}")
                     
                     # Early stopping
                     if val_loss < self.best_val_loss:
@@ -367,37 +279,28 @@ class GPTTrainer:
                         
                         if self.patience_counter >= self.early_stopping_patience:
                             print(f"Early stopping triggered after {self.iter_num} iterations")
-                            # Save final metrics
-                            self.metrics.save_metrics()
-                            # Generate final samples
-                            self.generate_samples()
+                            # Plot final losses
+                            self.plot_losses()
                             return
-
-                # Generate text samples
-                if self.iter_num % self.sample_every == 0:
-                    self.generate_samples()
 
                 # Checkpoint saving
                 if self.iter_num % self.train_config.save_every == 0:
                     print(f"Saving model to {self.checkpoint_dir}")
                     self.save_checkpoint(self.checkpoint_dir)
-                    self.metrics.save_metrics()
+                    self.plot_losses()
 
                 self.iter_num += 1
 
-        # Final checkpoint and metrics
-        self.save_checkpoint(self.checkpoint_dir)
-        self.metrics.save_metrics()
-        
-        # Generate final samples
-        self.generate_samples()
+        # Plot final losses
+        self.plot_losses()
 
 
-def main(train_path, val_path, checkpoint_dir, use_wandb=False, use_tensorboard=True):
+def main(train_path, val_path, checkpoint_dir):
+    # GPT-2 XL (1.5B params) configuration
     model_config = GPTConfig(
-        n_layer=12,
-        n_head=12,
-        n_embd=768,
+        n_layer=48,
+        n_head=25,
+        n_embd=1600,
         vocab_size=50304,
         block_size=1024,
         bias=True,
@@ -405,45 +308,23 @@ def main(train_path, val_path, checkpoint_dir, use_wandb=False, use_tensorboard=
 
     train_config = TrainConfig(
         num_iters=200,
-        batch_size=2,
-        grad_accumulation_steps=4,
-        max_lr=1e-3,
-        min_lr=1e-4,
+        batch_size=1,
+        grad_accumulation_steps=32,  # Increased for large model
+        max_lr=1e-4,
+        min_lr=1e-5,
         warmup_iters=20,
         lr_decay_iters=200,
-        save_every=20,
+        save_every=10,
         early_stopping_patience=5,
-        validation_interval=5,
-        sample_every=10,
-        num_samples=3,
-        max_sample_tokens=100,
+        validation_interval=10,
     )
-    
-    # Sample prompts for text generation during training
-    sample_prompts = [
-        "Once upon a time",
-        "In a world where",
-        "The future of AI is",
-        "She looked at him and said",
-        "The most important thing to remember"
-    ]
-    
-    trainer = GPTTrainer(
-        train_path, 
-        val_path, 
-        train_config, 
-        model_config, 
-        checkpoint_dir,
-        use_wandb=use_wandb,
-        use_tensorboard=use_tensorboard,
-        sample_prompts=sample_prompts
-    )
+    trainer = GPTTrainer(train_path, val_path, train_config, model_config, checkpoint_dir)
     trainer.train()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Train a GPT-2-style model on a custom dataset"
+        description="Train a GPT-2 XL (1.5B parameter) model on a custom dataset"
     )
 
     parser.add_argument(
@@ -461,21 +342,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoint_dir",
         type=str,
-        default="checkpoints",
+        default="checkpoints_xl",
         help="Path to checkpoint directory to save model weights",
-    )
-    parser.add_argument(
-        "--use_wandb",
-        action="store_true",
-        help="Whether to use Weights & Biases for tracking",
-    )
-    parser.add_argument(
-        "--use_tensorboard",
-        action="store_true",
-        default=True,
-        help="Whether to use TensorBoard for tracking",
     )
     args = parser.parse_args()
 
-    main(args.data_path, args.val_path, args.checkpoint_dir, 
-         use_wandb=args.use_wandb, use_tensorboard=args.use_tensorboard)
+    main(args.data_path, args.val_path, args.checkpoint_dir)

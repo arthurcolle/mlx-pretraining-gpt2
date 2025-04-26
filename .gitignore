@@ -6,3 +6,6 @@ venv
 __pycache__/
 .DS_Store
 checkpoints
+checkpoints_*/
+lr_finder_*/
+train.txt

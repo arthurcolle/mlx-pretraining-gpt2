@@ -2,3 +2,7 @@ mlx
 torch
 numpy
 tiktoken
+psutil
+matplotlib
+tensorboard
+wandb

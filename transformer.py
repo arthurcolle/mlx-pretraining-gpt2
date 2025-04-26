@@ -111,15 +111,22 @@ class GPT(nn.Module):
         kv_cache = []
 
         if cache is not None:
+            # When using cache, make sure we have the right cache length
+            if len(cache) != len(self.h):
+                raise ValueError(f"Cache length {len(cache)} doesn't match model layers {len(self.h)}")
+                
+            # For cached KV, we don't need the mask for subsequent tokens
             for i in range(len(cache)):
                 x, cache[i] = self.h[i](x, mask=None, cache=cache[i])
         else:
+            # Initial forward pass
             for block in self.h:
                 x, curr_cache = block(x, mask=mask)
                 if build_cache:
                     kv_cache.append(curr_cache)
 
         x = self.ln_f(x)
+        # Return the right cache depending on whether we're building or using it
         return x, kv_cache if build_cache else cache
 
     def _create_causal_mask(self, length: int):
@@ -165,6 +172,5 @@ class GPT(nn.Module):
         loss = nn.losses.cross_entropy(
             logits.reshape(-1, logits.shape[-1]), y.reshape(-1)
         )
-        mx.simplify(loss)
-
+        # mx.simplify was removed in newer versions of MLX
         return mx.mean(loss)
