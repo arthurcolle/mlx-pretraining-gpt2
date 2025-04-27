@@ -101,11 +101,12 @@ class GPT(nn.Module):
         # Set dtype based on config
         self.dtype = mx.float16 if config.use_fp16 else config.dtype
 
-        self.wte = nn.Embedding(config.vocab_size, config.n_embd, dtype=self.dtype)
-        self.wpe = nn.Embedding(config.block_size, config.n_embd, dtype=self.dtype)
+        # Create embeddings without dtype parameter
+        self.wte = nn.Embedding(config.vocab_size, config.n_embd)
+        self.wpe = nn.Embedding(config.block_size, config.n_embd)
         self.drop = nn.Dropout(config.dropout)
         self.h = [Block(config) for _ in range(config.n_layer)]
-        self.ln_f = nn.LayerNorm(config.n_embd, affine=config.bias, dtype=self.dtype)
+        self.ln_f = nn.LayerNorm(config.n_embd, affine=config.bias)
 
     @mx.compile
     def _forward_transformer_blocks(
@@ -189,5 +190,5 @@ class GPT(nn.Module):
         loss = nn.losses.cross_entropy(
             logits.reshape(-1, logits.shape[-1]), y.reshape(-1)
         )
-        # mx.simplify was removed in newer versions of MLX
+        # Use mean directly since mx.simplify was removed in newer versions of MLX
         return mx.mean(loss)

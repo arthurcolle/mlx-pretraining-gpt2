@@ -236,6 +236,7 @@ class GPTTrainer:
     def compute_batch_loss(self, loss):
         average_loss = self.accumulated_loss / self.grad_accumulation_steps
         self.accumulated_loss = 0.0
+        # simplify_compatible is used instead of mx.simplify which was removed in newer MLX versions
         simplify_compatible(loss, self.model.parameters())
         mx.eval(loss, self.model.parameters())
         return average_loss
