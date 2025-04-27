@@ -192,7 +192,8 @@ class GPTTrainer:
             for i, block in enumerate(self.model.h):
                 x, _ = block(x, mask=mask)
             x = self.model.ln_f(x)
-            logits = self.model.lm_head(x)
+            # Use embedding weights for output projection (no separate lm_head)
+            logits = x @ self.model.wte.weight.T
             
             # Compute loss
             loss = nn.losses.cross_entropy(
@@ -264,7 +265,8 @@ class GPTTrainer:
             for i, block in enumerate(self.model.h):
                 x, _ = block(x, mask=mask)
             x = self.model.ln_f(x)
-            logits = self.model.lm_head(x)
+            # Use embedding weights for output projection (no separate lm_head)
+            logits = x @ self.model.wte.weight.T
             
             loss = nn.losses.cross_entropy(
                 logits.reshape(-1, logits.shape[-1]), targets.reshape(-1)
