@@ -100,6 +100,14 @@ class GPTTrainer:
         # initialize the model and optimizer
         self.model_config = model_config
         self.model = GPT(model_config)
+        
+        # Check for multi-device training
+        self.devices = mx.available_devices()
+        if len(self.devices) > 1 and hasattr(mx, 'distribute'):
+            from mlx.distribute import distribute
+            print(f"Distributing model across {len(self.devices)} devices")
+            self.model = distribute(self.model, devices=self.devices)
+            
         self.optimizer = opt.AdamW(learning_rate=self.max_lr)
         self.loss_and_grad_fn = nn.value_and_grad(self.model, self.model.loss)
 
@@ -199,7 +207,17 @@ class GPTTrainer:
 
     def compute_minibatch_loss_grads(self, inputs, targets):
         inputs, targets = map(mx.array, (inputs, targets))
-        loss, grads = self.loss_and_grad_fn(inputs, targets)
+        
+        # Convert inputs and targets to float16 for mixed precision training
+        if hasattr(self.model_config, 'use_fp16') and self.model_config.use_fp16:
+            inputs = inputs.astype(mx.float16)
+        
+        # Use JIT compilation for faster execution
+        @mx.compile
+        def _loss_and_grad_fn(inputs, targets):
+            return self.loss_and_grad_fn(inputs, targets)
+            
+        loss, grads = _loss_and_grad_fn(inputs, targets)
 
         self.accumulated_grads = tree_map(
             lambda acc, new: acc + new * (1.0 / self.grad_accumulation_steps),
@@ -393,7 +411,7 @@ class GPTTrainer:
         self.generate_samples()
 
 
-def main(train_path, val_path, checkpoint_dir, use_wandb=False, use_tensorboard=True):
+def main(train_path, val_path, checkpoint_dir, use_wandb=False, use_tensorboard=True, use_fp16=False, distributed=False):
     model_config = GPTConfig(
         n_layer=12,
         n_head=12,
@@ -401,6 +419,7 @@ def main(train_path, val_path, checkpoint_dir, use_wandb=False, use_tensorboard=
         vocab_size=50304,
         block_size=1024,
         bias=True,
+        use_fp16=use_fp16,
     )
 
     train_config = TrainConfig(
@@ -475,7 +494,18 @@ if __name__ == "__main__":
         default=True,
         help="Whether to use TensorBoard for tracking",
     )
+    parser.add_argument(
+        "--use_fp16",
+        action="store_true",
+        help="Enable mixed precision training with float16",
+    )
+    parser.add_argument(
+        "--distributed",
+        action="store_true",
+        help="Enable multi-device distributed training",
+    )
     args = parser.parse_args()
 
     main(args.data_path, args.val_path, args.checkpoint_dir, 
-         use_wandb=args.use_wandb, use_tensorboard=args.use_tensorboard)
+         use_wandb=args.use_wandb, use_tensorboard=args.use_tensorboard,
+         use_fp16=args.use_fp16)

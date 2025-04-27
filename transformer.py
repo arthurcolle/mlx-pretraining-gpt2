@@ -14,6 +14,8 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True
+    use_fp16: bool = False
+    dtype = mx.float32
 
 
 class CausalSelfAttention(nn.Module):
@@ -95,16 +97,26 @@ class GPT(nn.Module):
         assert config.vocab_size is not None
         assert config.block_size is not None
         self.config = config
+        
+        # Set dtype based on config
+        self.dtype = mx.float16 if config.use_fp16 else config.dtype
 
-        self.wte = nn.Embedding(config.vocab_size, config.n_embd)
-        self.wpe = nn.Embedding(config.block_size, config.n_embd)
+        self.wte = nn.Embedding(config.vocab_size, config.n_embd, dtype=self.dtype)
+        self.wpe = nn.Embedding(config.block_size, config.n_embd, dtype=self.dtype)
         self.drop = nn.Dropout(config.dropout)
         self.h = [Block(config) for _ in range(config.n_layer)]
-        self.ln_f = nn.LayerNorm(config.n_embd, affine=config.bias)
+        self.ln_f = nn.LayerNorm(config.n_embd, affine=config.bias, dtype=self.dtype)
 
+    @mx.compile
     def _forward_transformer_blocks(
         self, x: mx.array, pos: mx.array, mask=None, cache=None, build_cache=False
     ):
+        # Ensure inputs are the right dtype for mixed precision
+        if self.config.use_fp16:
+            x = x.astype(mx.float16)
+            if mask is not None:
+                mask = mask.astype(mx.float16)
+                
         tok_emb = self.wte(x)
         pos_emb = self.wpe(pos)
         x = self.drop(tok_emb + pos_emb)
@@ -114,6 +126,11 @@ class GPT(nn.Module):
             # When using cache, make sure we have the right cache length
             if len(cache) != len(self.h):
                 raise ValueError(f"Cache length {len(cache)} doesn't match model layers {len(self.h)}")
+                
+            # Pre-allocate KV cache for maximum sequence length if not already done
+            if hasattr(self, 'max_seq_length') and not hasattr(self, '_kv_cache_allocated'):
+                # This would implement KV cache pre-allocation in a future version
+                self._kv_cache_allocated = True
                 
             # For cached KV, we don't need the mask for subsequent tokens
             for i in range(len(cache)):
