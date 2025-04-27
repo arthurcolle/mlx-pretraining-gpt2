@@ -171,7 +171,7 @@ class GPTTrainer:
         inputs, targets = map(mx.array, (inputs, targets))
         
         # Create a custom loss function that handles positional encoding internally
-        def custom_loss_fn(model, x, y):
+        def custom_loss_fn(x, y):
             # Create position indices using modern rotary position encoding approach
             seq_length = x.shape[1]
             pos = mx.arange(0, seq_length)
@@ -181,22 +181,22 @@ class GPTTrainer:
             
             # Forward pass with explicit positional information
             # This replaces the model's __call__ method temporarily for this computation
-            token_embeddings = model.wte(x)
+            token_embeddings = self.model.wte(x)
             
             # Apply positional encoding directly to embeddings
             # This is a simplified version of rotary position embeddings
-            position_embeddings = model.wpe(pos)
+            position_embeddings = self.model.wpe(pos)
             x = token_embeddings + position_embeddings
             
             # Manual forward pass through transformer blocks
-            for block in model.blocks:
+            for block in self.model.blocks:
                 x = block.ln_1(x)
                 attention_output = block.attn(x, mask=mask)
                 x = x + attention_output
                 x = x + block.mlp(block.ln_2(x))
             
-            x = model.ln_f(x)
-            logits = model.lm_head(x)
+            x = self.model.ln_f(x)
+            logits = self.model.lm_head(x)
             
             # Compute loss
             loss = nn.losses.cross_entropy(
