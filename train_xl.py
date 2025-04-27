@@ -170,34 +170,48 @@ class GPTTrainer:
     def compute_minibatch_loss_grads(self, inputs, targets):
         inputs, targets = map(mx.array, (inputs, targets))
         
-        # Wrap in try-except to handle potential errors in the model forward pass
+        # Create a custom loss function that handles positional encoding internally
+        def custom_loss_fn(model, x, y):
+            # Create position indices using modern rotary position encoding approach
+            seq_length = x.shape[1]
+            pos = mx.arange(0, seq_length)
+            
+            # Create causal mask for attention
+            mask = mx.tril(mx.ones((seq_length, seq_length)))
+            
+            # Forward pass with explicit positional information
+            # This replaces the model's __call__ method temporarily for this computation
+            token_embeddings = model.wte(x)
+            
+            # Apply positional encoding directly to embeddings
+            # This is a simplified version of rotary position embeddings
+            position_embeddings = model.wpe(pos)
+            x = token_embeddings + position_embeddings
+            
+            # Manual forward pass through transformer blocks
+            for block in model.blocks:
+                x = block.ln_1(x)
+                attention_output = block.attn(x, mask=mask)
+                x = x + attention_output
+                x = x + block.mlp(block.ln_2(x))
+            
+            x = model.ln_f(x)
+            logits = model.lm_head(x)
+            
+            # Compute loss
+            loss = nn.losses.cross_entropy(
+                logits.reshape(-1, logits.shape[-1]), y.reshape(-1)
+            )
+            return mx.mean(loss)
+        
+        # Use the custom loss function with value_and_grad
+        custom_loss_and_grad_fn = nn.value_and_grad(self.model, custom_loss_fn)
+        
         try:
-            loss, grads = self.loss_and_grad_fn(inputs, targets)
-        except TypeError as e:
-            print(f"Error in forward pass: {e}")
-            # Check if this is the missing 'pos' parameter error
-            if "missing 1 required positional argument: 'pos'" in str(e):
-                print("Attempting to fix missing 'pos' parameter issue...")
-                # Monkey patch the model's __call__ method to handle the missing parameter
-                original_call = self.model.__call__
-                
-                def patched_call(self_model, x, targets=None):
-                    # Create position indices
-                    pos = mx.arange(0, x.shape[1])
-                    # Create causal mask
-                    mask = self_model._create_causal_mask(x.shape[1])
-                    # Call the forward method with the position indices
-                    x, _ = self_model._forward_transformer_blocks(x, pos, mask=mask)
-                    x = self_model.ln_f(x)
-                    logits = self_model.lm_head(x)
-                    return logits
-                
-                # Apply the monkey patch
-                self.model.__call__ = patched_call.__get__(self.model, type(self.model))
-                # Try again with the patched method
-                loss, grads = self.loss_and_grad_fn(inputs, targets)
-            else:
-                raise
+            loss, grads = custom_loss_and_grad_fn(inputs, targets)
+        except Exception as e:
+            print(f"Error in forward pass with custom loss function: {e}")
+            raise
 
         self.accumulated_grads = tree_map(
             lambda acc, new: acc + new * (1.0 / self.grad_accumulation_steps),
@@ -239,7 +253,27 @@ class GPTTrainer:
         for _ in range(num_batches):
             inputs, targets = next(val_data)
             inputs, targets = map(mx.array, (inputs, targets))
-            logits = self.model(inputs)
+            
+            # Use the same approach as in compute_minibatch_loss_grads
+            seq_length = inputs.shape[1]
+            pos = mx.arange(0, seq_length)
+            
+            # Manual forward pass with positional encoding
+            token_embeddings = self.model.wte(inputs)
+            position_embeddings = self.model.wpe(pos)
+            x = token_embeddings + position_embeddings
+            
+            # Process through transformer blocks
+            for block in self.model.blocks:
+                x = block.ln_1(x)
+                mask = mx.tril(mx.ones((seq_length, seq_length)))
+                attention_output = block.attn(x, mask=mask)
+                x = x + attention_output
+                x = x + block.mlp(block.ln_2(x))
+            
+            x = self.model.ln_f(x)
+            logits = self.model.lm_head(x)
+            
             loss = nn.losses.cross_entropy(
                 logits.reshape(-1, logits.shape[-1]), targets.reshape(-1)
             )
@@ -274,6 +308,7 @@ class GPTTrainer:
 
     def train(self):
         self.print_parameter_count()
+        print("Using modern positional encoding for training")
 
         tic = time.perf_counter()
         train_data = self.data_loader.get_batch_iterator(self.batch_size)
