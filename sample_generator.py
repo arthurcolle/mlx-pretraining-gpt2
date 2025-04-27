@@ -108,7 +108,7 @@ class TextSampleGenerator:
         
         # Apply top-k filtering
         if top_k is not None and top_k > 0:
-            v, _ = mx.topk(logits, min(top_k, logits.shape[-1]))
+            v = mx.topk(logits, min(top_k, logits.shape[-1]))
             # Create a mask for the top-k logits
             min_value = v[:, -1].reshape(-1, 1)
             logits = mx.where(logits < min_value, float('-inf'), logits)
@@ -134,12 +134,19 @@ class TextSampleGenerator:
             ], axis=-1)
             sorted_mask = mx.logical_or(sorted_mask, shifted_mask)
             
-            # Set logits outside the mask to -inf
-            mask = mx.zeros_like(logits, dtype=mx.bool_)
+            # Apply top-p filtering directly by modifying logits
             for i in range(logits.shape[0]):
-                mask = mask.at[i, sorted_indices[i]].set(sorted_mask[i])
-            
-            logits = mx.where(mask, logits, float('-inf'))
+                # Create a new temporary logits array with -inf values
+                logits_masked = mx.full(logits[i].shape, float('-inf'))
+                # Only keep the values within the mask
+                for j in range(sorted_indices[i].size):
+                    if j < sorted_mask[i].size and sorted_mask[i][j]:
+                        idx = sorted_indices[i][j]
+                        # In MLX 0.20.0, use direct assignment
+                        logits_masked[idx] = logits[i, idx]
+                # Update the entire row for this batch
+                # In MLX 0.20.0, use direct assignment instead of at[].set()
+                logits[i] = logits_masked
         
         # Sample from the filtered distribution
         try:
