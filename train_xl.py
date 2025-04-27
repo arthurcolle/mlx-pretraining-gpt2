@@ -189,8 +189,8 @@ class GPTTrainer:
             x = token_embeddings + position_embeddings
             
             # Use compiled transformer forward with rotary positional embeddings
-            for i, block in enumerate(self.model.blocks):
-                x = block(x, mask=mask)
+            for i, block in enumerate(self.model.h):
+                x, _ = block(x, mask=mask)
             x = self.model.ln_f(x)
             logits = self.model.lm_head(x)
             
@@ -261,8 +261,8 @@ class GPTTrainer:
             
             # Use compiled transformer forward with rotary positional embeddings
             mask = mx.tril(mx.ones((seq_length, seq_length)))
-            for i, block in enumerate(self.model.blocks):
-                x = block(x, mask=mask)
+            for i, block in enumerate(self.model.h):
+                x, _ = block(x, mask=mask)
             x = self.model.ln_f(x)
             logits = self.model.lm_head(x)
             
