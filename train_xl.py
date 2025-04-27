@@ -189,7 +189,9 @@ class GPTTrainer:
             x = token_embeddings + position_embeddings
             
             # Use compiled transformer forward with rotary positional embeddings
-            x, _ = GPT._forward_transformer_blocks(self.model, x, pos, mask)
+            for i, block in enumerate(self.model.blocks):
+                x = block(x, mask=mask)
+            x = self.model.ln_f(x)
             logits = self.model.lm_head(x)
             
             # Compute loss
@@ -259,7 +261,8 @@ class GPTTrainer:
             
             # Use compiled transformer forward with rotary positional embeddings
             mask = mx.tril(mx.ones((seq_length, seq_length)))
-            x, _ = GPT._forward_transformer_blocks(self.model, x, pos, mask)
+            for i, block in enumerate(self.model.blocks):
+                x = block(x, mask=mask)
             x = self.model.ln_f(x)
             logits = self.model.lm_head(x)
             
