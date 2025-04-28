@@ -49,7 +49,21 @@ def load_openai_model(model_name):
 
     gpt_model = GPT(config)
 
-    weights = mx.load(model_name + ".npz")
+    # Load pre-converted NumPy weights for the OpenAI GPT-2 model
+    npz_path = model_name + ".npz"
+    if not os.path.isfile(npz_path):
+        raise FileNotFoundError(
+            f"Weight file '{npz_path}' not found. "
+            f"Please download the PyTorch model from Hugging Face and convert it to .npz format:\n"
+            f"  python convert_weights.py --weights_path path/to/pytorch_model.bin --model_name {model_name}"
+        )
+    try:
+        weights = mx.load(npz_path)
+    except Exception as e:
+        # mx.load wraps load errors for invalid archives
+        raise ValueError(
+            f"Failed to load weights from '{npz_path}'. Ensure it is a valid NumPy .npz archive "
+            f"created by convert_weights.py.") from e
     load_weights(gpt_model, weights)
 
     return gpt_model
